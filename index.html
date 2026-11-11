@@ -1049,6 +1049,7 @@ select.field{appearance:none;background-image:linear-gradient(45deg,transparent 
   var colOf = function (path) { return seg(path).slice(0, -1).join('/'); };
   function dbErr(e) {
     var c = e && (e.code || ''), m = (e && e.message) || 'database error';
+    if (c === '23505') return err('already_exists', m); // unique username (supabase/unique-handle.sql)
     if (c === '42501' || c === 'P0002' || c === '23514' || c === 'PGRST116') return err('invalid_argument', m);
     if (/fetch|network|Failed to/i.test(m)) return err('unavailable', m);
     return err('unavailable', m);
@@ -1872,14 +1873,19 @@ function L_dup(e,video){
 let toastT;
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(toastT); toastT=setTimeout(()=>t.classList.remove('on'),2600); }
 function needId(){ toast(S.offline?OFF:'Ehhez be kell jelentkezned.'); }
+/* usernames the server refused as taken (someone else may hold them before their profile reaches this device) */
+const TAKEN=new Set(); let lastErr=null;
+const handleTaken=v=>TAKEN.has(v)||Object.entries(S.people).some(([id,p])=>id!==S.uid&&p&&String(p.handle||'').toLowerCase()===v);
 async function w(fn){
+  lastErr=null;
   if(!S.db){ toast(OFF); return false; }
   if(!S.uid){ needId(); return false; }
   if(!S.canWrite){ toast('Csak nézni tudod az appot. Kérj szerkesztői meghívót a tulajdonostól.'); return false; }
   try{ const r=await fn(); return r===undefined?true:r; }
   catch(e){
-    console.warn(e); const c=e&&e.code;
-    if(c==='invalid_argument') toast('Nem sikerült menteni. Lehet, hogy nincs írási jogod: kérj szerkesztői meghívót.');
+    console.warn(e); const c=e&&e.code; lastErr=c;
+    if(c==='already_exists') toast('Ez a felhasználónév már foglalt.');
+    else if(c==='invalid_argument') toast('Nem sikerült menteni. Lehet, hogy nincs írási jogod: kérj szerkesztői meghívót.');
     else if(c==='quota_exceeded') toast('Megtelt az app tárhelye, előbb törölni kell régi tartalmat.');
     else if(c==='resource_exhausted') toast('Túl gyorsan jönnek a műveletek. Várj pár másodpercet.');
     else toast('Nem sikerült menteni. Próbáld újra.');
@@ -2467,7 +2473,7 @@ function wireProfileForm(root,mode,onDone){
   root.querySelector('#pf').addEventListener('submit',async e=>{
     e.preventDefault(); const handle=hi.value.trim().toLowerCase();
     if(!HANDLE_RE.test(handle)){ hint.textContent=rule; hint.classList.add('bad'); hi.focus(); return; }
-    if(Object.entries(S.people).some(([id,p])=>id!==S.uid&&p&&p.handle===handle)){ hint.textContent='Ez a felhasználónév már foglalt.'; hint.classList.add('bad'); hi.focus(); return; }
+    if(handleTaken(handle)){ hint.textContent='Ez a felhasználónév már foglalt.'; hint.classList.add('bad'); hi.focus(); return; }
     btn.disabled=true; btn.textContent='Mentés…';
     const data={handle,name:root.querySelector('#pfn').value.trim().slice(0,40),bio:root.querySelector('#pfb').value.trim().slice(0,160),lang:LANG||'hu',onboarded:(S.people[S.uid]||{}).onboarded||now()};
     if(avBlob){ if(S.assets){ try{ data.avatar=(await S.assets.upload(avBlob,{type:'image/jpeg'})).id; }catch(err){ toast(upErr(err)); } } else toast('Profilképhez szerkesztői hozzáférés kell, a többit elmentettem.'); }
@@ -2475,6 +2481,7 @@ function wireProfileForm(root,mode,onDone){
     const ok=await w(()=>S.db.doc('people/'+S.uid).update(data));
     btn.disabled=false; btn.textContent=mode==='create'?'Profil létrehozása':'Mentés';
     if(ok) onDone();
+    else if(lastErr==='already_exists'){ TAKEN.add(handle); hint.textContent='Ez a felhasználónév már foglalt.'; hint.classList.add('bad'); hi.focus(); }
   });
 }
 /* auth flow: welcome → log in (claude.ai account) or 4-step sign-up; a local session flag gives a real log out */
@@ -2518,7 +2525,7 @@ function suValidate(){
   if(su.step===1){ const v=su.handle, hint=onbEl.querySelector('#suhint'); hint.className='hint';
     if(!v){ ok=false; hint.innerHTML='<span>3–24 karakter: kisbetű, szám, pont, aláhúzás.</span>'; }
     else if(!HANDLE_RE.test(v)){ ok=false; hint.classList.add('bad'); hint.innerHTML='<span>3–24 karakter: kisbetű, szám, pont, aláhúzás.</span>'; }
-    else if(Object.entries(S.people).some(([id,p])=>id!==S.uid&&p&&p.handle===v)){ ok=false; hint.classList.add('bad'); hint.innerHTML=`${ic('close')}<span>Ez a felhasználónév már foglalt.</span>`; }
+    else if(handleTaken(v)){ ok=false; hint.classList.add('bad'); hint.innerHTML=`${ic('close')}<span>Ez a felhasználónév már foglalt.</span>`; }
     else { hint.classList.add('ok'); hint.innerHTML=`${ic('check')}<span>Szabad felhasználónév</span>`; } }
   if(su.step===2) ok=!!su.name.trim();
   btn.disabled=!ok;
@@ -2539,7 +2546,7 @@ async function suNext(){
   if(su.avBlob){ if(S.assets){ try{ data.avatar=(await S.assets.upload(su.avBlob,{type:'image/jpeg'})).id; }catch(err){ toast(upErr(err)); } } else toast('Profilképhez szerkesztői hozzáférés kell, a többit elmentettem.'); }
   if(!S.people[S.uid]) await ensurePerson();
   const ok=await w(()=>S.db.doc('people/'+S.uid).update(data));
-  if(!ok){ btn.disabled=false; btn.textContent='Regisztráció befejezése'; return; }
+  if(!ok){ if(lastErr==='already_exists'){ TAKEN.add(su.handle); su.step=1; renderSignup(); return; } btn.disabled=false; btn.textContent='Regisztráció befejezése'; return; }
   setSession(true); su=null; closeOnb(); toast('Kész a profilod'); refresh();
 }
 function onbClick(e){
