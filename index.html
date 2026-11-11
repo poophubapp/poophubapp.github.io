@@ -1586,7 +1586,7 @@ const isBlocked=id=>!!id&&id!==S.uid&&!!blockedMap()[id];
 let HIDDEN=new Set(); try{ HIDDEN=new Set(JSON.parse(localStorage.getItem('pz_hidden')||'[]')); }catch{}
 const shown=p=>!isBlocked(p.author)&&!HIDDEN.has(p.id);
 const seenPosts=()=>okPosts().filter(shown);
-const LEGAL='https://ferencleuko.github.io/poophub/';
+const LEGAL='https://poophubapp.github.io/';
 const likeEntries=p=>Object.entries(p.likes&&typeof p.likes==='object'?p.likes:{}).filter(([,v])=>typeof v==='number'&&v>0);
 const likeCount=p=>likeEntries(p).length;
 const liked=p=>!!S.uid&&likeEntries(p).some(([k])=>k===S.uid);
