@@ -1441,18 +1441,43 @@ if(window.visualViewport){
   const later=()=>{ if(!raf) raf=requestAnimationFrame(sync); };
   vv.addEventListener('resize',later); vv.addEventListener('scroll',later);
 }
-/* iPhone: dragging a sheet (comments, menus) on a part that does not scroll moved the whole page, worst with the keyboard
-   open, and the sheet stayed shifted. Inside a sheet only a list that can really scroll may move; everything else stays put.
+/* Sheets (comments, menus) on a phone:
+   - Only a list that can still scroll in the finger's direction moves. At its top or bottom, and on every part that does not
+     scroll, the move is stopped: otherwise iPhone Safari moves the whole page (worst with the keyboard open) and the sheet
+     stays shifted.
+   - Pulling down where nothing scrolls up any more (the grab bar, the header, a list at its top) drags the sheet down;
+     let go far enough or fast enough and it closes, otherwise it springs back.
    When the keyboard closes the page is put back to the top, where Safari sometimes leaves it scrolled. */
+let sheetDrag=null;
+function canScroll(el,dx,dy){
+  const cs=getComputedStyle(el);
+  if(Math.abs(dy)>=Math.abs(dx)){ if(!/(auto|scroll)/.test(cs.overflowY)||el.scrollHeight<=el.clientHeight+1) return false;
+    return dy>0?el.scrollTop>0:el.scrollTop+el.clientHeight<el.scrollHeight-1; }
+  if(!/(auto|scroll)/.test(cs.overflowX)||el.scrollWidth<=el.clientWidth+1) return false;
+  return dx>0?el.scrollLeft>0:el.scrollLeft+el.clientWidth<el.scrollWidth-1;
+}
+document.addEventListener('touchstart',e=>{
+  const t=e.target, wrap=t instanceof Element&&t.closest('.sheet-wrap'), sheet=wrap&&wrap.querySelector('.sheet');
+  sheetDrag=wrap&&sheet&&e.touches.length===1?{wrap,sheet,x:e.touches[0].clientX,y:e.touches[0].clientY,y0:0,on:false,off:0,t:0,v:0}:null;
+},{passive:true});
 document.addEventListener('touchmove',e=>{
-  const t=e.target; if(!(t instanceof Element)||!t.closest('.sheet-wrap')||e.touches.length>1) return;
-  for(let el=t;el&&!el.classList.contains('sheet-wrap');el=el.parentElement){
-    const cs=getComputedStyle(el);
-    if(/(auto|scroll)/.test(cs.overflowY)&&el.scrollHeight>el.clientHeight+1) return;
-    if(/(auto|scroll)/.test(cs.overflowX)&&el.scrollWidth>el.clientWidth+1) return;
-  }
+  const d=sheetDrag; if(!d) return; if(e.touches.length>1){ sheetDrag=null; return; }
+  const p=e.touches[0], dx=p.clientX-d.x, dy=p.clientY-d.y; d.x=p.clientX; d.y=p.clientY;
+  if(d.on){ if(e.cancelable) e.preventDefault(); const off=Math.max(0,p.clientY-d.y0), now2=performance.now(); d.v=(off-d.off)/Math.max(1,now2-d.t); d.off=off; d.t=now2; d.sheet.style.transform=`translateY(${off}px)`; return; }
+  if(!dx&&!dy) return;
+  for(let el=e.target;el&&el!==d.wrap;el=el.parentElement) if(canScroll(el,dx,dy)) return;
   if(e.cancelable) e.preventDefault();
+  if(dy>0&&Math.abs(dy)>=Math.abs(dx)){ d.on=true; d.y0=p.clientY; d.t=performance.now(); d.sheet.style.transition='none'; }
 },{passive:false});
+function endSheetDrag(){
+  const d=sheetDrag; sheetDrag=null; if(!d||!d.on) return;
+  const close=d.off>110||(d.off>30&&d.v>.5);
+  d.sheet.style.transition='transform .2s ease-out'; d.sheet.style.transform=close?'translateY(110%)':'';
+  if(close){ d.wrap.style.transition='opacity .2s'; d.wrap.style.opacity='0'; const ae=document.activeElement; if(ae&&d.wrap.contains(ae)) ae.blur();
+    setTimeout(()=>{ const top=S.stack[S.stack.length-1]; if(top&&top.el===d.wrap) popLayer(); },190); }
+  else setTimeout(()=>{ d.sheet.style.transition=''; },220);
+}
+document.addEventListener('touchend',endSheetDrag); document.addEventListener('touchcancel',endSheetDrag);
 document.addEventListener('focusout',()=>setTimeout(()=>{ const a=document.activeElement; if(!a||!/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)){ if(window.scrollY||document.documentElement.scrollTop) window.scrollTo(0,0); } },120));
 function syncStatusBar(){ try{ const top=typeof S!=='undefined'&&S.stack.length?S.stack[S.stack.length-1].type:'', reels=typeof S!=='undefined'&&!S.stack.length&&S.tab==='reels', onDark=top==='camera'||reels;
   document.documentElement.classList.toggle('dark-top',reels);   // the strip behind the status bar goes dark together with the reels screen
