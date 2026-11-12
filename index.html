@@ -1728,14 +1728,14 @@ function fpFromSource(src){
 }
 async function printOfImage(blob,orig){
   const url=URL.createObjectURL(blob);
-  try{ const img=new Image(); img.src=url; await img.decode(); const fp=fpFromSource(img); fp.pm=shapePrep(img); fp.sc=sceneOf(img); fp.ok=poopCheck(img,fp); fp.f=await sha(orig||blob); return fp; }catch{ return null; } finally{ URL.revokeObjectURL(url); }
+  try{ const img=new Image(); img.src=url; await img.decode(); const fp=fpFromSource(img); fp.pm=shapePrep(img); fp.sc=sceneOf(img); fp.ok=await poopCheck(img,fp); fp.f=await sha(orig||blob); return fp; }catch{ return null; } finally{ URL.revokeObjectURL(url); }
 }
 async function printOfVideo(file){
   const fp={f:await sha(file)}; const url=URL.createObjectURL(file);
   try{
     const v=document.createElement('video'); v.muted=true; v.playsInline=true; v.preload='auto'; v.src=url;
     await new Promise((res,rej)=>{ const t=setTimeout(()=>rej(new Error('timeout')),4000); v.onloadeddata=()=>{ const to=Math.min(1,(v.duration||2)/3); v.onseeked=()=>{ clearTimeout(t); res(); }; try{ v.currentTime=to; }catch(e){ clearTimeout(t); rej(e); } }; v.onerror=()=>{ clearTimeout(t); rej(new Error('video')); }; });
-    Object.assign(fp,fpFromSource(v)); fp.pm=shapePrep(v); fp.sc=sceneOf(v); fp.ok=poopCheck(v,fp);
+    Object.assign(fp,fpFromSource(v)); fp.pm=shapePrep(v); fp.sc=sceneOf(v); fp.ok=await poopCheck(v,fp);
   }catch{} finally{ URL.revokeObjectURL(url); }
   return fp.f||fp.d?fp:null;
 }
@@ -1791,17 +1791,31 @@ function sceneOf(src){ try{ return PoopMatch.scene(PoopMatch.toPixels(src)); }ca
    - the net says "poop" (score at least NET.limit; in the unsure range it also looks at the mirror image), or
    - the net says "toilet", the photo shows porcelain, and the recognizer found a clear brownish or dark thing in it.
      This second way is deliberately loose: a small stool in a photo of a whole toilet must not be turned away. */
-let NET=null;
-try{ fetch('poopnet.bin').then(r=>r.ok?r.arrayBuffer():null).then(b=>{ if(b) NET=PoopNet.load(b); }).catch(()=>{}); }catch(e){}
-function poopCheck(src,fp){
-  if(!NET) return looksLikePoop(fp);
+/* The colour check alone lets almost anything brownish through (faces, wood, hair), so it only decides where the weights
+   file does not exist at all: the claude.ai version. Everywhere else a picture is refused until the classifier has loaded,
+   and refused when the classifier fails on it. fp.ck keeps the reason (scores and which rule), saved with the post. */
+/* Cross-validated on 511 photos (2026-11-12): at 0.5, 165/175 poop photos pass and 20/336 others (0.4: 166 and 27). The toilet
+   rule needs at least 0.2 so an empty toilet or a bathroom selfie does not pass on porcelain plus something brownish. */
+const POOP_LIMIT=0.5, TOILET_POOP=0.2;
+let NET=null, NET_P=null, NET_NONE=/(^|\.)claude(usercontent)?\.(ai|com)$/.test(location.hostname);
+function loadNet(){
+  if(NET) return Promise.resolve(NET);
+  if(!NET_P) NET_P=fetch('poopnet.bin',{cache:'no-cache'}).then(r=>{ if(r.status===404){ NET_NONE=true; return null; } return r.ok?r.arrayBuffer():null; })
+    .then(b=>{ if(b) NET=PoopNet.load(b); return NET; }).catch(e=>{ console.warn('picture check not loaded',e); return null; }).finally(()=>{ if(!NET) NET_P=null; });
+  return NET_P;
+}
+try{ loadNet(); }catch(e){}
+async function poopCheck(src,fp){
+  if(!NET&&!NET_NONE) await Promise.race([loadNet(),new Promise(r=>setTimeout(r,15000))]);
+  if(!NET){ if(NET_NONE){ fp.ck={w:'c'}; return looksLikePoop(fp); } fp.ck={w:'nonet'}; return false; }
   try{
     const img=PoopMatch.toPixels(src); let s=PoopNet.scores(NET,img);
     if(s.poop>=.15&&s.poop<.7){ const m=PoopNet.scores(NET,img,true); s={poop:(s.poop+m.poop)/2,toilet:(s.toilet+m.toilet)/2}; }
-    if(s.poop>=NET.limit) return true;
-    const pm=fp&&fp.pm, t=pm&&pm.tone;
-    return s.toilet>=.5&&!!(fp&&fp.sc&&fp.sc.toilet)&&looksLikePoop(fp)&&pm.seg.comps.length<=6&&!!t&&(t.s>=.4||t.v<100);
-  }catch(e){ console.warn('picture check skipped',e); return looksLikePoop(fp); }
+    const r2=v=>Math.round(v*100)/100; fp.ck={p:r2(s.poop),t:r2(s.toilet),w:'m'};
+    if(s.poop>=Math.max(NET.limit,POOP_LIMIT)) return true;
+    const pm=fp&&fp.pm, t=pm&&pm.tone; fp.ck.w='t';
+    return s.poop>=TOILET_POOP&&s.toilet>=.5&&!!(fp&&fp.sc&&fp.sc.toilet)&&looksLikePoop(fp)&&pm.seg.comps.length<=6&&!!t&&(t.s>=.4||t.v<100);
+  }catch(e){ console.warn('picture check failed',e); fp.ck={w:'err'}; return false; }
 }
 function looksLikePoop(fp){
   const pm=fp&&fp.pm; if(!pm||!pm.seg||pm.seg.frac<0.008) return false;
@@ -1809,7 +1823,8 @@ function looksLikePoop(fp){
   return (t.h>=5&&t.h<=62)||(t.s<0.25&&t.v<110);
 }
 const counts=p=>p.hu!==0;
-function L_nopoop(video){
+function L_nopoop(video,fp){
+  if(fp&&fp.ck&&(fp.ck.w==='nonet'||fp.ck.w==='err')){ const el=mkSheet(`<div class="grab"></div><div class="won dup"><div class="lens sm"></div><h2>Most nem tudom ellenőrizni a képet</h2><p class="muted">A képellenőrző nem töltődött be. Nézd meg, van-e internet, és próbáld újra.</p><button class="btn wide xl" data-act="back">Rendben</button></div>`); return {type:'nopoop',el}; }
   const el=mkSheet(`<div class="grab"></div><div class="won dup"><div class="lens sm"></div><h2>${video?'Ezen a videón nem látok kakit':'Ezen a képen nem látok kakit'}</h2><p class="muted">Csak olyan kép mehet fel, amin látszik. Bármilyen állaté lehet.</p><p class="small dim">Fotózd közelebbről és jó fényben, hogy jól kivehető legyen.</p><button class="btn wide xl" data-act="back">Rendben</button></div>`);
   return {type:'nopoop',el};
 }
@@ -2396,14 +2411,14 @@ function L_camera(opts={}){
     const sc=Math.min(1,1440/Math.max(v.videoWidth,v.videoHeight)); const c=document.createElement('canvas'); c.width=Math.round(v.videoWidth*sc); c.height=Math.round(v.videoHeight*sc);
     const x=c.getContext('2d'); if(st.facing==='user'){ x.translate(c.width,0); x.scale(-1,1); } x.drawImage(v,0,0,c.width,c.height);
     const b=await new Promise(r=>c.toBlob(r,'image/jpeg',.88)); if(!b) return;
-    const t=now(), fp=await printOfImage(b,b); if(!fp||!fp.ok){ pushLayer(L_nopoop(false)); return; }
+    const t=now(), fp=await printOfImage(b,b); if(!fp||!fp.ok){ pushLayer(L_nopoop(false,fp)); return; }
     const dup=findDup(fp)||findShapeDup(fp&&fp.pm,t)||sameMoment(t); if(dup){ pushLayer(L_dup(dup,false)); return; }
     addPhotos([{blob:b,fp,t,hu:!!(fp.sc&&fp.sc.toilet)}]);
   }
   /* a reel recorded with the in-app camera */
   async function gotReel(f){
     if(f.size>20*1024*1024) return toast('A videó túl nagy (max. 20 MB). Vegyél fel rövidebbet.');
-    const t=now(), vfp=await printOfVideo(f); if(!vfp||!vfp.ok){ pushLayer(L_nopoop(true)); return; }
+    const t=now(), vfp=await printOfVideo(f); if(!vfp||!vfp.ok){ pushLayer(L_nopoop(true,vfp)); return; }
     const vd=findDup(vfp)||findShapeDup(vfp&&vfp.pm,t)||sameMoment(t); if(vd){ pushLayer(L_dup(vd,true)); return; }
     st.mode='reel'; setMedia(f,'reel',vfp); st.vt=t; st.vhu=!!(vfp.sc&&vfp.sc.toilet); draw();
   }
@@ -2411,6 +2426,7 @@ function L_camera(opts={}){
     if(st.busy) return; if(!S.db) return toast(OFF); if(!S.uid) return needId(); if(!S.assets) return toast(NOUP);
     const media=st.kind==='reel'?[{fp:st.vfp,t:st.vt,hu:st.vhu}]:st.items.map(x=>({fp:x.fp,t:x.t,hu:x.hu}));
     media.forEach(m=>{ if(typeof m.t!=='number') m.t=now(); });
+    const bad=media.find(m=>!m.fp||!m.fp.ok); if(bad){ pushLayer(L_nopoop(st.kind==='reel',bad.fp)); return; }
     const prints=media.map(m=>m.fp).filter(Boolean); const hit=media.map(m=>(m.fp&&(findDup(m.fp)||findShapeDup(m.fp.pm,m.t)))||sameMoment(m.t)).find(Boolean);
     if(hit){ pushLayer(L_dup(hit,st.kind==='reel')); return; }
     const btn=el.querySelector('#sh'); st.busy=true; btn.disabled=true;
@@ -2425,7 +2441,7 @@ function L_camera(opts={}){
     const kind=st.kind;
     const doc={author:S.uid,kind,asset:ids[0],caption:cap,filter:st.filter,group:dest||null,at:now(),likes:{},comments:{}}; if(ids.length>1) doc.assets=ids;
     doc.ct=media.map(m=>Math.min(m.t,doc.at)); doc.hu=media.some(m=>m.hu)?1:0;
-    if(prints.length){ doc.fp=prints.map(f=>({d:f.d||'',c:f.c||'',f:f.f||''})); const sg=prints.map(f=>f.pm&&f.pm.sig?f.pm.sig:null); if(sg.some(Boolean)) doc.sg=sg; }
+    if(prints.length){ doc.fp=prints.map(f=>({d:f.d||'',c:f.c||'',f:f.f||''})); const sg=prints.map(f=>f.pm&&f.pm.sig?f.pm.sig:null); if(sg.some(Boolean)) doc.sg=sg; doc.ck=prints.map(f=>f.ck||null); }
     const before=rankOf(S.uid);
     const ok=await w(()=>S.db.collection('posts').add(doc));
     if(!ok){ fail(); return; }
@@ -2711,6 +2727,7 @@ Object.assign(EN,{
  'Elérted a legmagasabb rangot!':'You’ve reached the top rank!','Következő:':'Next:','7 napos átlag':'7-day average','ma':'today','Profil megosztása':'Share profile','Felhasználónév másolva':'Username copied'
 });
 Object.assign(EN,{"1. hely":"1st place","2. hely":"2nd place","3. hely":"3rd place","Top 10":"Top 10","Jelenlegi helyezés az összesített ranglistán":"Current standing on the all-time leaderboard","Még nincs érem.":"No awards yet.","Az érmek a lezárt napok, hetek, hónapok és évek helyezéseiért járnak: arany az 1., ezüst a 2., bronz a 3. helyért, és külön jelvény a top 10-ért. Minél hosszabb az időszak, annál díszesebb az érem.":"Awards come from placements on finished days, weeks, months and years: gold for 1st, silver for 2nd, bronze for 3rd, and a badge for the top 10. The longer the period, the fancier the award.","Kerülj a top 10-be egy napon, héten vagy hónapon, és itt jelenik meg az érmed.":"Reach the top 10 on a day, week or month and your award shows up here.","Gratulálunk!":"Congratulations!","Megnézem a profilomon":"View on my profile","A te helyezésed":"Your position","A lista a top 10-et mutatja. Amikor egy nap, hét, hónap vagy év lezárul, az első három helyezett arany, ezüst és bronz érmet kap a profiljára, a top 10 többi tagja pedig Top 10 jelvényt.":"The list shows the top 10. When a day, week, month or year ends, the top three get gold, silver and bronze awards on their profile, and the rest of the top 10 get a Top 10 badge."});
+Object.assign(EN,{"Most nem tudom ellenőrizni a képet":"I can't check this picture right now","A képellenőrző nem töltődött be. Nézd meg, van-e internet, és próbáld újra.":"The picture check has not loaded. Check your internet connection and try again."});
 Object.assign(EN,{"Impresszum":"Imprint","A fióktörlés a szerveren még nincs bekapcsolva. Próbáld később.":"Account deletion is not switched on on the server yet. Try again later.","Továbbiak":"More","Bejelentés":"Report","Letiltás:":"Block:","Letiltás":"Block","Törlés moderátorként":"Delete as moderator","Mégse":"Cancel","Mi a baj ezzel a poszttal? A moderátor megnézi, és ha kell, törli. A bejelentő nevét a szerző nem látja.":"What is wrong with this post? A moderator looks at it and removes it if needed. The author does not see who reported it.","Nincs rajta kaki":"There is no poop in it","Ismételt vagy lopott kép":"Repeated or stolen picture","Ember vagy intim testrész látszik rajta":"A person or private body part is visible","Sértő vagy illegális tartalom":"Offensive or illegal content","Spam vagy reklám":"Spam or advertising","Bejelentve. A posztot elrejtettük előled.":"Reported. We hid the post from you.","Letiltva. Nem látod többé a posztjait és üzeneteit.":"Blocked. You won't see their posts and messages any more.","Tiltás feloldva":"Unblocked","Biztosan letiltod? Koppints újra":"Block them? Tap again","Letiltott felhasználók":"Blocked people","Feloldás":"Unblock","Senkit nem tiltottál le.":"You haven't blocked anyone.","Letiltottad ezt a felhasználót":"You blocked this person","A posztjai, hozzászólásai és üzenetei nem jelennek meg neked.":"Their posts, comments and messages don't show up for you.","Tiltás feloldása":"Unblock","Bejelentések":"Reports","Nincs bejelentés":"No reports","Amit a felhasználók bejelentenek, itt jelenik meg.":"What people report shows up here.","A bejelentések nem érhetők el.":"Reports are not available.","Poszt törlése":"Delete post","Elvetés":"Dismiss","Biztosan törlöd? Koppints újra":"Delete it? Tap again","törölve":"deleted","Fiók törlése":"Delete account","Végleges törlés":"Delete for good","Biztos? Koppints újra":"Sure? Tap again","Törlés…":"Deleting…","A fiókod törölve.":"Your account is deleted.","Nem sikerült törölni. Próbáld újra később.":"Could not delete. Try again later.","A csevegésekben elküldött üzeneteid megmaradnak a többiek beszélgetéseiben.":"Messages you sent stay in the other people's chats.","Felhasználási feltételek":"Terms of use","Adatvédelmi tájékoztató":"Privacy notice","Ezen a képen nem látok kakit":"I can't see any poop in this picture","Ezen a videón nem látok kakit":"I can't see any poop in this video","Csak olyan kép mehet fel, amin látszik. Bármilyen állaté lehet.":"Only pictures that show it can go up. Any animal's will do.","Fotózd közelebbről és jó fényben, hogy jól kivehető legyen.":"Shoot closer and in good light so it is easy to make out.","Vécében készült: beleszámít a rangodba.":"Taken in a toilet: it counts for your rank.","Nem vécében készült: felmegy, de nem számít a rangodba.":"Not taken in a toilet: it goes up but does not count for your rank.","Állati":"Animal","Helyezések":"Placements","Heti rangjelvények":"Weekly rank badges","Heti rang":"Weekly rank","Minden hét végén megkapod az adott heti rangod jelvényét. Az első a hét lezárása után jelenik meg itt.":"At the end of every week you get the badge of that week's rank. The first one shows up here once the week is closed.","Minden hét végén mindenki megkapja az adott heti rangja jelvényét, a hét posztjai alapján. Ha ugyanazt a rangot többször szerzed meg, a jelvényen ×2, ×3 jelzi. Amelyik héten nem posztolsz, arra a Constipated jelvény jár.":"At the end of every week everyone gets the badge of that week's rank, based on the week's posts. If you earn the same rank again, the badge shows ×2, ×3. A week without a post earns the Constipated badge.","Megjött a heti rangod!":"Your weekly rank is here!","A kamera nem érhető el":"The camera is not available","A kamera nem érhető el.":"The camera is not available.","Posztolni csak az app saját kamerájával lehet. Engedélyezd a kamerát, aztán próbáld újra.":"You can only post with the app's own camera. Allow the camera, then try again.","Kamera indítása…":"Starting the camera…","A felvétel ezen az eszközön nem működik.":"Recording does not work on this device.","Még egy kép":"One more photo","Még egy":"One more","Vissza a poszthoz":"Back to the post","Ez ugyanaz az alkalom":"This is the same occasion","1 percen belül készült egy korábbi képeddel.":"It was taken within a minute of one of your earlier pictures.","Egy alkalomról csak egy poszt mehet fel. Ami egy percen belül készül, azt ugyanannak az alkalomnak vesszük. Több képet egy posztba tehetsz.":"Only one post can go up per occasion. Anything taken within a minute counts as the same occasion. You can put several pictures into one post.","A két kép 10 percen belül készült, ilyenkor szigorúbb a vizsgálat.":"The two pictures were taken within 10 minutes, so the check is stricter.","Ez a kép már fent van":"This photo is already posted","Ez a videó már fent van":"This video is already posted","már posztolta":"already posted it","Minden képet és videót csak egyszer lehet feltölteni. Készíts egy újat!":"Every photo and video can only be uploaded once. Take a new one!","Eredeti poszt megnyitása":"Open the original post","Rendben":"OK","Ez a kép már benne van a posztban.":"This photo is already in the post.","1 kép már fent van, ezt kihagytam.":"1 photo is already posted, so I skipped it."});
 RULES.push([/^(\d+) kép már fent van, ezeket kihagytam\.$/,(m,a)=>a+' photos are already posted, so I skipped them.'],[/^(\d+) kép már benne van a posztban\.$/,(m,a)=>a+' photos are already in the post.']);
 Object.assign(EN,{"Ellenőrzés…":"Checking…","Ez túl hasonló egy korábbi poszthoz":"Too similar to an earlier post","Az AI szerint ugyanazt a kakit fotóztad le újra, csak másképp. Minden darab csak egyszer mehet fel.":"The AI thinks you photographed the same poop again, just differently. Each one can only go up once."});
@@ -2756,9 +2773,11 @@ function L_matchtest(){
   return {type:'matchtest',el};
 }
 /* ---------- safety sheets ---------- */
+/* for moderators: why the picture check let a post through (fp.ck, saved as post.ck) */
+const ckText=c=>!c?'–':c.w==='c'?'csak színellenőrzés':c.w==='m'?`felismerő, kaki ${Math.round(c.p*100)}%`:c.w==='t'?`vécé-szabály, kaki ${Math.round(c.p*100)}%, vécé ${Math.round(c.t*100)}%`:String(c.w);
 function L_postmenu(pid){
   const p=S.posts.find(x=>x.id===pid); if(!p) return {type:'postmenu',el:mkSheet('<div class="grab"></div><p class="muted center">Ez a poszt már nem elérhető.</p>')};
-  const el=mkSheet(`<div class="grab"></div><div class="menu-list"><button class="btn ghost wide" data-act="report" data-pid="${h(pid)}">${ic('flag')}Bejelentés</button><button class="btn ghost wide" data-act="block" data-uid="${h(p.author)}"><span>Letiltás:</span> <b data-noi18n>${h(nm(p.author))}</b></button>${S.isOwner?`<button class="btn ghost wide danger" data-act="moddel" data-pid="${h(pid)}">${ic('trash')}Törlés moderátorként</button>`:''}<button class="link-b center" data-act="back">Mégse</button></div>`);
+  const el=mkSheet(`<div class="grab"></div><div class="menu-list"><button class="btn ghost wide" data-act="report" data-pid="${h(pid)}">${ic('flag')}Bejelentés</button><button class="btn ghost wide" data-act="block" data-uid="${h(p.author)}"><span>Letiltás:</span> <b data-noi18n>${h(nm(p.author))}</b></button>${S.isOwner&&Array.isArray(p.ck)?`<p class="small dim center" data-noi18n>Képellenőrzés: ${h(p.ck.map(ckText).join(' · '))}</p>`:''}${S.isOwner?`<button class="btn ghost wide danger" data-act="moddel" data-pid="${h(pid)}">${ic('trash')}Törlés moderátorként</button>`:''}<button class="link-b center" data-act="back">Mégse</button></div>`);
   return {type:'postmenu',el};
 }
 const REASONS=['Nincs rajta kaki','Ismételt vagy lopott kép','Ember vagy intim testrész látszik rajta','Sértő vagy illegális tartalom','Spam vagy reklám'];
