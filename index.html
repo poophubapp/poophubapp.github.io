@@ -39,7 +39,7 @@
 /* camera and reels stay dark in both themes, like a viewfinder */
 .layer.cam,#v-reels{--bg:#1a110b;--surface:#25180f;--raise:#342217;--line:#4a3122;--fg:#f7ebde;--muted:#c4a58c;--dim:#8f7059;--accent:#ff7a1a;--accent-hi:#ffa04d;--accent-ink:#1a110b;color:var(--fg);color-scheme:dark}
 *{box-sizing:border-box}
-html{height:100%;box-sizing:border-box;background:var(--bg)}
+html{height:100%;overscroll-behavior:none;box-sizing:border-box;background:var(--bg)}
 body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:15px;line-height:1.45;overflow:hidden;-webkit-tap-highlight-color:transparent}
 button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;text-align:inherit}
 button:disabled{cursor:default;opacity:.45}
@@ -1441,6 +1441,19 @@ if(window.visualViewport){
   const later=()=>{ if(!raf) raf=requestAnimationFrame(sync); };
   vv.addEventListener('resize',later); vv.addEventListener('scroll',later);
 }
+/* iPhone: dragging a sheet (comments, menus) on a part that does not scroll moved the whole page, worst with the keyboard
+   open, and the sheet stayed shifted. Inside a sheet only a list that can really scroll may move; everything else stays put.
+   When the keyboard closes the page is put back to the top, where Safari sometimes leaves it scrolled. */
+document.addEventListener('touchmove',e=>{
+  const t=e.target; if(!(t instanceof Element)||!t.closest('.sheet-wrap')||e.touches.length>1) return;
+  for(let el=t;el&&!el.classList.contains('sheet-wrap');el=el.parentElement){
+    const cs=getComputedStyle(el);
+    if(/(auto|scroll)/.test(cs.overflowY)&&el.scrollHeight>el.clientHeight+1) return;
+    if(/(auto|scroll)/.test(cs.overflowX)&&el.scrollWidth>el.clientWidth+1) return;
+  }
+  if(e.cancelable) e.preventDefault();
+},{passive:false});
+document.addEventListener('focusout',()=>setTimeout(()=>{ const a=document.activeElement; if(!a||!/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)){ if(window.scrollY||document.documentElement.scrollTop) window.scrollTo(0,0); } },120));
 function syncStatusBar(){ try{ const top=typeof S!=='undefined'&&S.stack.length?S.stack[S.stack.length-1].type:'', reels=typeof S!=='undefined'&&!S.stack.length&&S.tab==='reels', onDark=top==='camera'||reels;
   document.documentElement.classList.toggle('dark-top',reels);   // the strip behind the status bar goes dark together with the reels screen
   const sb=window.Capacitor&&window.Capacitor.Plugins&&window.Capacitor.Plugins.StatusBar; if(!sb) return; const dark=onDark||theme==='dark'||(theme==='auto'&&matchMedia('(prefers-color-scheme: dark)').matches); sb.setStyle({style:dark?'DARK':'LIGHT'}).catch(()=>{}); }catch{} }
